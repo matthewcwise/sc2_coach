@@ -1,15 +1,46 @@
-
-# Format percentages
-def format_percentage(value):
-    if isinstance(value, (int, float)) and value < 1:
-        return f"{value * 100:.0f}%"
-    elif isinstance(value, (int, float)):
-        return f"{value:.0f}"
-    return value
-
 import sc2reader
+import psycopg2
+from psycopg2 import sql
+import os
+import sc2reader
+import psycopg2
+from psycopg2 import sql
+pw = os.getenv("DB_PASSWORD")
 
-def extract_replay_info(replay_file, personal_account="TheLeengwist"):
+def check_user_and_roles(conn):
+    try:
+        with conn.cursor() as cursor:
+            # Check current user
+            cursor.execute("SELECT current_user;")
+            user = cursor.fetchone()
+            print(f"Current user: {user[0]}")
+
+            # Check role memberships
+            cursor.execute("SELECT rolname FROM pg_roles WHERE pg_has_role(current_user, oid, 'member');")
+            roles = cursor.fetchall()
+            print("Roles:", [role[0] for role in roles])
+    except Exception as e:
+        print("Error checking roles:", e)
+
+# Function to create a database connection
+def create_connection():
+    conn = None  # Initialize conn to None to ensure it's always declared
+    try:
+        # Connect to the PostgreSQL database using environment variables
+        conn = psycopg2.connect(
+            dbname="starcraft_replays",
+            user="postgres",
+            password=pw,  # Get the password from an environment variable
+            host="localhost"
+        )
+        print("Connection to PostgreSQL DB successful")
+    except psycopg2.OperationalError as e:
+        print(f"Operational error occurred: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+    return conn
+
+def extract_and_save_replay_info(conn, replay_file, personal_account="TheLeengwist"):
     replay = sc2reader.load_replay(replay_file)
     players = [(player.name, player.play_race, player.result) for player in replay.players]
     winner = [player.name for player in replay.players if player.result == 'Win']
@@ -27,16 +58,15 @@ def extract_replay_info(replay_file, personal_account="TheLeengwist"):
         if player[0] != personal_account:
             opponent_race = player[1]
 
-    return {
-        "players": players,
-        "winner": winner,
-        "game_length": game_length,
+    replay_info = {
         "start_time": start_time,
+        "game_length": game_length,
+        "winner": winner,
         "win": win,
         "opponent_race": opponent_race,
-        "category": category  # Added to classify the replay type
+        "category": category
     }
-
+    insert_replay_data(conn, replay_info)
 
 # Cluster names
 terran_cluster_names = {
@@ -122,15 +152,146 @@ def analyze_replays_by_race(replay_data, race, output_csv, k = 5):
     print(f"Cluster statistics saved to {output_csv}")
 
 
+import json
+import sc2reader
+import os
+import uuid
+
+player_db = "TheLeengwist"
+
+import sc2reader
+import psycopg2
+from psycopg2 import sql
+
+# Function to insert replay data into the database
+def insert_replay_data(conn, replay_info):
+    with conn.cursor() as cursor:
+        cursor.execute(sql.SQL("""
+            INSERT INTO replays (game_uuid, start_time, game_length, player1_name, player1_race, player2_name, player2_race, winner_name, match_up, win, category)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """), (
+            replay_info['game_uuid'], replay_info['start_time'], replay_info['game_length'],
+            replay_info['player1_name'], replay_info['player1_race'],
+            replay_info['player2_name'], replay_info['player2_race'],
+            replay_info['winner_name'], replay_info['match_up'],
+            replay_info['win'], replay_info['category']
+        ))
+        conn.commit()
+        print(f"Completed Commit: {replay_info['game_uuid']} {replay_info['player1_name']} v. {replay_info['player2_name']}")
+
+def extract_and_save_replay_info(conn, replay_file, uuid, personal_account="TheLeengwist"):
+    replay = sc2reader.load_replay(replay_file)
+    players = replay.players
+    if len(players) != 2:
+        return  # Only process 1v1 replays
+
+    game_length = replay.frames / replay.game_fps / 60  # convert frames to minutes
+    start_time = replay.start_time.strftime("%Y-%m-%d %H:%M:%S")  # format the start time
+    winner_name = [player.name for player in players if player.result == 'Win'][0]
+
+    # Assume player 1 is always the first player listed
+    player1_name = players[0].name
+    player1_race = players[0].play_race
+    player2_name = players[1].name
+    player2_race = players[1].play_race
+    match_up = f"{player1_race[0]}v{player2_race[0]}"
+
+    win = personal_account in winner_name
+    category = "personal" if personal_account in [player1_name, player2_name] else "public"
+
+    replay_info = {
+        "game_uuid": uuid,
+        "start_time": start_time,
+        "game_length": game_length,
+        "player1_name": player1_name,
+        "player1_race": player1_race,
+        "player2_name": player2_name,
+        "player2_race": player2_race,
+        "winner_name": winner_name,
+        "match_up": match_up,
+        "win": win,
+        "category": category
+    }
+    insert_replay_data(conn, replay_info)
+
+# Function to insert unit composition data into the database
+def insert_unit_composition_data(conn, replay_id, player_name, unit_type, unit_category, count, percentage):
+    with conn.cursor() as cursor:
+        cursor.execute(sql.SQL("""
+            INSERT INTO unit_compositions (replay_id, player_name, unit, unit_category, unit_count, unit_percentage)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """), (replay_id, player_name, unit_type, unit_category, count, percentage))
+        conn.commit()
+
+
+def extract_and_save_unit_compositions(conn, replay_file, replay_id):
+    replay = sc2reader.load_replay(replay_file)
+    replay_id = str(uuid.uuid4())  # Generate a unique ID for each replay
+    unit_compositions = {player.name: {} for player in replay.players}
+    invalid_units = {
+        "BeaconArmy", "BeaconDefend", "BeaconAttack", "BeaconHarass", "BeaconIdle",
+        "BeaconAuto", "BeaconDetect", "BeaconScout", "BeaconClaim", "BeaconExpand",
+        "BeaconRally", "BeaconCustom1", "BeaconCustom2", "BeaconCustom3", "BeaconCustom4",
+        "CommandCenter", "KD8Charge", "Hatchery", "Lair", "Hive", "Extractor", "Nexus",
+        "OrbitalCommand", "AutoTurret", "MULE", "Larva","Interceptor", 'Larva',
+        'InvisibleTargetDummy', 'Corruptor', 'SwarmHostMP', 'Infestor',
+        'ChangelingMarineShield', 'BroodlingEscort', 'Interceptor', 'AdeptPhaseShift'
+    }
+
+    for event in replay.events:
+        if isinstance(event, sc2reader.events.tracker.UnitBornEvent):
+            player_name = event.unit.owner.name if event.unit.owner else "Neutral"
+            if player_name not in unit_compositions:
+                continue
+
+            unit_type = event.unit_type_name
+            if unit_type in invalid_units:
+                continue
+            if unit_type in unit_compositions[player_name]:
+                unit_compositions[player_name][unit_type] += 1
+            else:
+                unit_compositions[player_name][unit_type] = 1
+
+    # Insert data into the database
+    for player_name, units in unit_compositions.items():
+        total_units = sum(units.values())
+        for unit_type, count in units.items():
+            percentage = (count / total_units) if total_units > 0 else 0
+            insert_unit_composition_data(conn, replay_id, player_name, unit_type, 'TBD',count, round(percentage, 2))
+   
+
+
+def save_replay_data(directory, conn):
+    for filename in os.listdir(directory):
+        if filename.endswith(".SC2Replay"):
+            try:
+                game_uuid = str(uuid.uuid4())
+                filepath = os.path.join(directory, filename)
+                extract_and_save_replay_info(conn, filepath, uuid=game_uuid)
+                extract_and_save_unit_compositions(conn, filepath, game_uuid)
+                print(f"Processed {filename}")
+            except Exception as e:
+                print(f"Failed to process {filename}: {e}")
+                continue
+
+# Example usage
+
+
 if __name__ == "__main__":
     # Example usage
-    input_file = "data/replays_data.json"
-    tvt_output_csv = "data/tvt_cluster_stats.csv"
-    tvp_output_csv = "data/tvp_cluster_stats.csv"
-    tvz_output_csv = "data/tvz_cluster_stats.csv"
-    with open(input_file, "r") as f:
-        replay_data = json.load(f)
+    conn = create_connection()
+    check_user_and_roles(conn)
+    directory = "/mnt/c/Users/matth/Documents/StarCraft II/Accounts/86722028/1-S2-1-3925175/Replays/Multiplayer/"
+    all_replay_data = save_replay_data(directory, conn)
 
-    analyze_replays_by_race(replay_data, 'Terran', tvt_output_csv)
-    analyze_replays_by_race(replay_data, 'Protoss', tvp_output_csv)
-    analyze_replays_by_race(replay_data, 'Zerg', tvz_output_csv)
+
+    # input_file = "data/replays_data.json"
+    # tvt_output_csv = "data/tvt_cluster_stats.csv"
+    # tvp_output_csv = "data/tvp_cluster_stats.csv"
+    # tvz_output_csv = "data/tvz_cluster_stats.csv"
+    # with open(input_file, "r") as f:
+    #     replay_data = json.load(f)
+
+    # analyze_replays_by_race(replay_data, 'Terran', tvt_output_csv)
+    # analyze_replays_by_race(replay_data, 'Protoss', tvp_output_csv)
+    # analyze_replays_by_race(replay_data, 'Zerg', tvz_output_csv)
