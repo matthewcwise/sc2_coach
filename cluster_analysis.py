@@ -23,6 +23,6 @@ for race in races:
 
     # Save the summary DataFrame
     cluster_summary_leengwist = cluster_summary_leengwist.round(2)
-    cluster_summary_leengwist.to_csv('data/cluster_summary_theleengwist.csv')
+    cluster_summary_leengwist.to_csv(f'data/cluster_summary_theleengwist_{race.lower()}.csv')
     print(f"\n\nSummary vs. {race} for TheLeengwist")
     print(cluster_summary_leengwist)

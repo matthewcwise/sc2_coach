@@ -12,7 +12,7 @@ def safe_eval_dict(data_str):
 
 races = ["Terran", "Protoss", "Zerg"]
 
-for race in races:
+def cluster_gen(race):
     # Load CSV data from file
     df = pd.read_csv(f"data/cluster_input_{race.lower()}.csv")
     df['unit_composition'] = df['unit_composition'].apply(safe_eval_dict)

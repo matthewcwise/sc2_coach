@@ -115,9 +115,14 @@ def save_replay_data(directory, filepath="data/replay_data.csv", overwrite=True)
     # Check if the file exists and load it if overwrite is False
     if not overwrite and os.path.exists(filepath):
         existing_data = pd.read_csv(filepath)
+        existing_filenames = set(existing_data.iloc[:,0])  # Assuming the first column contains filenames
     i = 0
     for filename in os.listdir(directory):
         if filename.endswith(".SC2Replay"):
+            if not overwrite and filename in existing_filenames:
+                # print("Skipping duplicate file:", filename)
+                continue  # Skip processing this file as it already exists in the data
+
             i+=1
             if i%100 == 0:
                 print("Processing #:", i)
@@ -182,7 +187,7 @@ def save_replay_data(directory, filepath="data/replay_data.csv", overwrite=True)
 if __name__ == "__main__":
     directories = [
         "/mnt/c/Users/matth/Documents/StarCraft II/Accounts/86722028/1-S2-1-3925175/Replays/Multiplayer/",
-         "data/public_replays",
+        #  "data/public_replays",
          ]
     for directory in directories:
         save_replay_data(directory, overwrite=False)
